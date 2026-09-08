@@ -193,7 +193,7 @@ def render_languages(ref, token: str | None) -> None:
             color_discrete_sequence=CATEGORICAL_COLORS,
             title="Share of code by language",
         )
-        fig.update_traces(textinfo="label+percent")
+        fig.update_traces(textinfo="percent", textposition="inside")
         fig.update_layout(margin=dict(t=40, b=10))
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     else:
