@@ -118,9 +118,15 @@ def render_activity(ref, token: str | None) -> None:
         cols[2].metric("Trend", trend_labels.get(activity["trend"], activity["trend"]))
 
         df = pd.DataFrame({"Week": activity["weeks"], "Commits": activity["counts"]})
-        fig = px.bar(df, x="Week", y="Commits", color_discrete_sequence=[SEQUENTIAL_BLUE])
-        fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.bar(
+            df,
+            x="Week",
+            y="Commits",
+            color_discrete_sequence=[SEQUENTIAL_BLUE],
+            title="Weekly commit activity (last 52 weeks)",
+        )
+        fig.update_layout(showlegend=False, margin=dict(t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     else:
         st.info("No commit activity data available for this repository.")
 
@@ -143,9 +149,10 @@ def render_activity(ref, token: str | None) -> None:
             orientation="h",
             color_discrete_sequence=[SEQUENTIAL_BLUE],
             labels={"contributions": "Commits", "login": ""},
+            title="Top contributors by commits",
         )
-        fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(showlegend=False, margin=dict(t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     else:
         st.info("No contributor data available.")
 
@@ -168,8 +175,8 @@ def render_activity(ref, token: str | None) -> None:
         st.caption(f"Issue close rate: {issues['issue_close_rate']:.0%}")
 
 
-def render_code_structure(repo: dict, ref, token: str | None) -> None:
-    """Render the Code Structure tab: language breakdown and file tree stats."""
+def render_languages(ref, token: str | None) -> None:
+    """Render the Languages tab: a breakdown of code by language."""
     try:
         languages_raw = fetch_languages(ref.owner, ref.name, token)
     except GitHubAPIError as exc:
@@ -177,18 +184,24 @@ def render_code_structure(repo: dict, ref, token: str | None) -> None:
         languages_raw = {}
     languages = summarize_languages(languages_raw)
 
-    st.subheader("Language breakdown")
     if languages:
         df = pd.DataFrame(languages)
-        fig = px.pie(df, names="language", values="bytes", color_discrete_sequence=CATEGORICAL_COLORS)
+        fig = px.pie(
+            df,
+            names="language",
+            values="bytes",
+            color_discrete_sequence=CATEGORICAL_COLORS,
+            title="Share of code by language",
+        )
         fig.update_traces(textinfo="label+percent")
-        fig.update_layout(margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(margin=dict(t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     else:
         st.info("No language data available.")
 
-    st.divider()
 
+def render_repo_structure(repo: dict, ref, token: str | None) -> None:
+    """Render the Repository Structure tab: file tree stats."""
     try:
         with st.spinner("Fetching file tree..."):
             tree = fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
@@ -205,17 +218,19 @@ def render_code_structure(repo: dict, ref, token: str | None) -> None:
     if structure["truncated"]:
         st.caption("This repository is large — GitHub truncated the file listing.")
 
-    if structure["extensions"]:
-        st.write("**File types**")
-        ext_df = pd.DataFrame(structure["extensions"], columns=["Extension", "Files"])
-        st.dataframe(ext_df, hide_index=True, use_container_width=True)
-
-    if structure["largest_files"]:
-        st.write("**Largest files**")
-        largest_df = pd.DataFrame(structure["largest_files"])
-        largest_df["size"] = largest_df["size"].apply(lambda n: f"{n / 1024:.1f} KB")
-        largest_df = largest_df.rename(columns={"path": "Path", "size": "Size"})
-        st.dataframe(largest_df, hide_index=True, use_container_width=True)
+    table_col1, table_col2 = st.columns(2)
+    with table_col1:
+        if structure["extensions"]:
+            st.write("**File types**")
+            ext_df = pd.DataFrame(structure["extensions"], columns=["Extension", "Files"])
+            st.dataframe(ext_df, hide_index=True, use_container_width=True)
+    with table_col2:
+        if structure["largest_files"]:
+            st.write("**Largest files**")
+            largest_df = pd.DataFrame(structure["largest_files"])
+            largest_df["size"] = largest_df["size"].apply(lambda n: f"{n / 1024:.1f} KB")
+            largest_df = largest_df.rename(columns={"path": "Path", "size": "Size"})
+            st.dataframe(largest_df, hide_index=True, use_container_width=True)
 
 
 def render_health_score(repo: dict, ref, token: str | None) -> None:
@@ -250,22 +265,44 @@ def render_health_score(repo: dict, ref, token: str | None) -> None:
     status = st.success if result["score"] >= 80 else st.warning if result["score"] >= 60 else st.error
     status(f"Health score: {result['score']}/100 (grade {result['grade']})")
 
-    df = pd.DataFrame(result["breakdown"])
-    df["percent"] = df["score"] / df["max"] * 100
-    fig = px.bar(
-        df.iloc[::-1],
-        x="percent",
-        y="category",
-        orientation="h",
-        range_x=[0, 100],
-        color_discrete_sequence=[SEQUENTIAL_BLUE],
-        labels={"percent": "Score (%)", "category": ""},
-    )
-    fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    chart_col, detail_col = st.columns([3, 2])
 
-    for item in result["breakdown"]:
-        st.write(f"**{item['category']}** — {item['score']}/{item['max']}: {item['explanation']}")
+    with chart_col:
+        df = pd.DataFrame(result["breakdown"])
+        df["percent"] = df["score"] / df["max"] * 100
+        fig = px.bar(
+            df.iloc[::-1],
+            x="percent",
+            y="category",
+            orientation="h",
+            range_x=[0, 100],
+            color_discrete_sequence=[SEQUENTIAL_BLUE],
+            labels={"percent": "Score (%)", "category": ""},
+            title="Score by category",
+        )
+        fig.update_layout(showlegend=False, margin=dict(t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+
+    with detail_col:
+        st.write("**Category details**")
+        for item in result["breakdown"]:
+            st.markdown(f"**{item['category']}** — {item['score']}/{item['max']}")
+            st.caption(item["explanation"])
+
+
+def render_strengths_weaknesses() -> None:
+    """Render the Strengths & Weaknesses tab: placeholder until Phase 6 wires up AI."""
+    st.info(
+        "AI-generated strengths and weaknesses will appear here once an AI API key "
+        "is configured (Phase 6)."
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Strengths**")
+        st.caption("Not yet available.")
+    with col2:
+        st.write("**Weaknesses**")
+        st.caption("Not yet available.")
 
 
 if analyze_clicked:
@@ -291,14 +328,18 @@ if "repo_data" in st.session_state:
     ref = st.session_state["repo_ref"]
     token = github_token or None
 
-    overview_tab, activity_tab, code_tab, health_tab = st.tabs(
-        ["Overview", "Activity", "Code Structure", "Health Score"]
+    overview_tab, health_tab, languages_tab, activity_tab, structure_tab, strengths_tab = st.tabs(
+        ["Overview", "Health Score", "Languages", "Activity", "Repository Structure", "Strengths & Weaknesses"]
     )
     with overview_tab:
         render_overview(repo_data)
-    with activity_tab:
-        render_activity(ref, token)
-    with code_tab:
-        render_code_structure(repo_data, ref, token)
     with health_tab:
         render_health_score(repo_data, ref, token)
+    with languages_tab:
+        render_languages(ref, token)
+    with activity_tab:
+        render_activity(ref, token)
+    with structure_tab:
+        render_repo_structure(repo_data, ref, token)
+    with strengths_tab:
+        render_strengths_weaknesses()
