@@ -8,7 +8,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from analyzer.activity import summarize_commit_activity, summarize_contributors, summarize_issues
-from analyzer.code_analysis import analyze_file_structure, summarize_languages
+from analyzer.code_analysis import analyze_file_structure, detect_project_files, summarize_languages
+from analyzer.health_score import compute_health_score
 from github.client import (
     GitHubAPIError,
     fetch_commit_activity,
@@ -209,6 +210,43 @@ def render_code_structure(repo: dict, ref, token: str | None) -> None:
         st.dataframe(largest_df, hide_index=True, use_container_width=True)
 
 
+def render_health_score(repo: dict, ref, token: str | None) -> None:
+    """Render the Health Score tab: a deterministic 0-100 score with a breakdown."""
+    try:
+        with st.spinner("Scoring repository health..."):
+            commit_activity = summarize_commit_activity(fetch_commit_activity(ref.owner, ref.name, token))
+            contributors = fetch_contributors(ref.owner, ref.name, token, limit=10)
+            issue_summary = summarize_issues(fetch_issue_counts(ref.owner, ref.name, token))
+            project_files = detect_project_files(
+                fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
+            )
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        return
+
+    result = compute_health_score(repo, commit_activity, contributors, issue_summary, project_files)
+
+    status = st.success if result["score"] >= 80 else st.warning if result["score"] >= 60 else st.error
+    status(f"Health score: {result['score']}/100 (grade {result['grade']})")
+
+    df = pd.DataFrame(result["breakdown"])
+    df["percent"] = df["score"] / df["max"] * 100
+    fig = px.bar(
+        df.iloc[::-1],
+        x="percent",
+        y="category",
+        orientation="h",
+        range_x=[0, 100],
+        color_discrete_sequence=[SEQUENTIAL_BLUE],
+        labels={"percent": "Score (%)", "category": ""},
+    )
+    fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    for item in result["breakdown"]:
+        st.write(f"**{item['category']}** — {item['score']}/{item['max']}: {item['explanation']}")
+
+
 if analyze_clicked:
     if not repo_url:
         st.warning("Enter a repository URL first.")
@@ -232,10 +270,14 @@ if "repo_data" in st.session_state:
     ref = st.session_state["repo_ref"]
     token = github_token or None
 
-    overview_tab, activity_tab, code_tab = st.tabs(["Overview", "Activity", "Code Structure"])
+    overview_tab, activity_tab, code_tab, health_tab = st.tabs(
+        ["Overview", "Activity", "Code Structure", "Health Score"]
+    )
     with overview_tab:
         render_overview(repo_data)
     with activity_tab:
         render_activity(ref, token)
     with code_tab:
         render_code_structure(repo_data, ref, token)
+    with health_tab:
+        render_health_score(repo_data, ref, token)

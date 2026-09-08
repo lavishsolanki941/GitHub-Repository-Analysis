@@ -44,6 +44,23 @@ def analyze_file_structure(tree: dict, top_n: int = 10) -> dict:
     }
 
 
+def detect_project_files(tree: dict) -> dict:
+    """Detect presence of common community-health files in a repo tree.
+
+    Args:
+        tree: payload from GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1.
+
+    Returns:
+        dict of booleans: has_readme, has_contributing, has_ci.
+    """
+    paths = [e["path"].lower() for e in tree.get("tree", []) if e.get("type") == "blob"]
+    return {
+        "has_readme": any(p.rsplit("/", 1)[-1].startswith("readme") for p in paths),
+        "has_contributing": any(p.rsplit("/", 1)[-1].startswith("contributing") for p in paths),
+        "has_ci": any(p.startswith(".github/workflows/") for p in paths),
+    }
+
+
 def summarize_languages(languages: dict, top_n: int = 6) -> list[dict]:
     """Convert a {language: bytes} payload into a percentage breakdown.
 
