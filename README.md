@@ -1,7 +1,7 @@
 # GitHub Repository Analyzer
 
-Work in progress — full README will be written in Phase 8 once all
-features are implemented.
+Work in progress 
+
 
 ## Run it
 
