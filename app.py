@@ -2,10 +2,22 @@
 
 import os
 
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
-from github.client import GitHubAPIError, fetch_repo
+from analyzer.activity import summarize_commit_activity, summarize_contributors, summarize_issues
+from analyzer.code_analysis import analyze_file_structure, summarize_languages
+from github.client import (
+    GitHubAPIError,
+    fetch_commit_activity,
+    fetch_contributors,
+    fetch_issue_counts,
+    fetch_languages,
+    fetch_repo,
+    fetch_tree,
+)
 from github.parser import InvalidRepoURLError, parse_repo_url
 
 load_dotenv()
@@ -15,6 +27,19 @@ st.set_page_config(
     page_icon=":mag:",
     layout="wide",
 )
+
+# Sequential (magnitude) and categorical (identity) colors from the project's
+# validated data-viz palette - dark-surface steps, since the app runs dark.
+SEQUENTIAL_BLUE = "#3987e5"
+CATEGORICAL_COLORS = [
+    "#3987e5",  # blue
+    "#d95926",  # orange
+    "#199e70",  # aqua
+    "#c98500",  # yellow
+    "#d55181",  # magenta
+    "#008300",  # green
+    "#898781",  # muted gray, reserved for "Other"
+]
 
 with st.sidebar:
     st.header("GitHub Repository Analyzer")
@@ -61,6 +86,129 @@ def render_overview(repo: dict) -> None:
     info_cols[2].write(f"[View on GitHub]({repo['html_url']})")
 
 
+def render_activity(ref, token: str | None) -> None:
+    """Render the Activity tab: commit trend, top contributors, issue/PR health."""
+    try:
+        with st.spinner("Fetching commit activity..."):
+            weekly = fetch_commit_activity(ref.owner, ref.name, token)
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        weekly = []
+    activity = summarize_commit_activity(weekly)
+
+    if activity["weeks"]:
+        trend_labels = {
+            "increasing": "Increasing",
+            "decreasing": "Decreasing",
+            "steady": "Steady",
+            "quiet": "No recent commits",
+        }
+        cols = st.columns(3)
+        cols[0].metric("Commits (last year)", f"{activity['total_last_year']:,}")
+        cols[1].metric("Commits (last 4 weeks)", activity["total_last_4_weeks"])
+        cols[2].metric("Trend", trend_labels.get(activity["trend"], activity["trend"]))
+
+        df = pd.DataFrame({"Week": activity["weeks"], "Commits": activity["counts"]})
+        fig = px.bar(df, x="Week", y="Commits", color_discrete_sequence=[SEQUENTIAL_BLUE])
+        fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No commit activity data available for this repository.")
+
+    st.divider()
+
+    try:
+        contributors_raw = fetch_contributors(ref.owner, ref.name, token, limit=10)
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        contributors_raw = []
+    contributors = summarize_contributors(contributors_raw)
+
+    st.subheader("Top contributors")
+    if contributors:
+        df = pd.DataFrame(contributors)[["login", "contributions"]].iloc[::-1]
+        fig = px.bar(
+            df,
+            x="contributions",
+            y="login",
+            orientation="h",
+            color_discrete_sequence=[SEQUENTIAL_BLUE],
+            labels={"contributions": "Commits", "login": ""},
+        )
+        fig.update_layout(showlegend=False, margin=dict(t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No contributor data available.")
+
+    st.divider()
+
+    try:
+        counts = fetch_issue_counts(ref.owner, ref.name, token)
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        counts = {}
+    issues = summarize_issues(counts)
+
+    st.subheader("Issues & pull requests")
+    cols = st.columns(4)
+    cols[0].metric("Open issues", issues["open_issues"])
+    cols[1].metric("Closed issues", issues["closed_issues"])
+    cols[2].metric("Open PRs", issues["open_prs"])
+    cols[3].metric("Closed PRs", issues["closed_prs"])
+    if issues["issue_close_rate"] is not None:
+        st.caption(f"Issue close rate: {issues['issue_close_rate']:.0%}")
+
+
+def render_code_structure(repo: dict, ref, token: str | None) -> None:
+    """Render the Code Structure tab: language breakdown and file tree stats."""
+    try:
+        languages_raw = fetch_languages(ref.owner, ref.name, token)
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        languages_raw = {}
+    languages = summarize_languages(languages_raw)
+
+    st.subheader("Language breakdown")
+    if languages:
+        df = pd.DataFrame(languages)
+        fig = px.pie(df, names="language", values="bytes", color_discrete_sequence=CATEGORICAL_COLORS)
+        fig.update_traces(textinfo="label+percent")
+        fig.update_layout(margin=dict(t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No language data available.")
+
+    st.divider()
+
+    try:
+        with st.spinner("Fetching file tree..."):
+            tree = fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
+    except GitHubAPIError as exc:
+        st.error(str(exc))
+        tree = {}
+    structure = analyze_file_structure(tree)
+
+    st.subheader("File structure")
+    cols = st.columns(3)
+    cols[0].metric("Files", f"{structure['file_count']:,}")
+    cols[1].metric("Directories", f"{structure['dir_count']:,}")
+    cols[2].metric("Max depth", structure["max_depth"])
+    if structure["truncated"]:
+        st.caption("This repository is large — GitHub truncated the file listing.")
+
+    if structure["extensions"]:
+        st.write("**File types**")
+        ext_df = pd.DataFrame(structure["extensions"], columns=["Extension", "Files"])
+        st.dataframe(ext_df, hide_index=True, use_container_width=True)
+
+    if structure["largest_files"]:
+        st.write("**Largest files**")
+        largest_df = pd.DataFrame(structure["largest_files"])
+        largest_df["size"] = largest_df["size"].apply(lambda n: f"{n / 1024:.1f} KB")
+        largest_df = largest_df.rename(columns={"path": "Path", "size": "Size"})
+        st.dataframe(largest_df, hide_index=True, use_container_width=True)
+
+
 if analyze_clicked:
     if not repo_url:
         st.warning("Enter a repository URL first.")
@@ -80,4 +228,14 @@ if analyze_clicked:
                 st.session_state["repo_ref"] = ref
 
 if "repo_data" in st.session_state:
-    render_overview(st.session_state["repo_data"])
+    repo_data = st.session_state["repo_data"]
+    ref = st.session_state["repo_ref"]
+    token = github_token or None
+
+    overview_tab, activity_tab, code_tab = st.tabs(["Overview", "Activity", "Code Structure"])
+    with overview_tab:
+        render_overview(repo_data)
+    with activity_tab:
+        render_activity(ref, token)
+    with code_tab:
+        render_code_structure(repo_data, ref, token)

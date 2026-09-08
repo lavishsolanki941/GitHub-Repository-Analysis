@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import requests
 import streamlit as st
 
@@ -66,6 +68,56 @@ class GitHubClient:
         """GET /repos/{owner}/{repo} - core repository metadata."""
         return self._get(f"/repos/{owner}/{repo}")
 
+    def get_languages(self, owner: str, repo: str) -> dict:
+        """GET /repos/{owner}/{repo}/languages - bytes of code per language."""
+        return self._get(f"/repos/{owner}/{repo}/languages")
+
+    def get_contributors(self, owner: str, repo: str, limit: int = 10) -> list:
+        """GET /repos/{owner}/{repo}/contributors - top contributors by commit count."""
+        return self._get(f"/repos/{owner}/{repo}/contributors", params={"per_page": limit})
+
+    def get_commit_activity(self, owner: str, repo: str) -> list:
+        """GET /repos/{owner}/{repo}/stats/commit_activity - weekly commits, last 52 weeks.
+
+        GitHub computes this asynchronously: a 202 with an empty body means
+        "still computing" - retry a few times with a short delay before
+        giving up and returning an empty list.
+        """
+        for attempt in range(3):
+            data = self._get(f"/repos/{owner}/{repo}/stats/commit_activity")
+            if data:
+                return data
+            if attempt < 2:
+                time.sleep(1.5)
+        return []
+
+    def get_issue_counts(self, owner: str, repo: str) -> dict:
+        """Open/closed issue and PR counts via the Search API.
+
+        Uses total_count from search results rather than paginating the
+        full issue list, so each figure costs one request.
+        """
+        counts = {}
+        queries = {
+            "open_issues": "is:issue is:open",
+            "closed_issues": "is:issue is:closed",
+            "open_prs": "is:pr is:open",
+            "closed_prs": "is:pr is:closed",
+        }
+        for key, query in queries.items():
+            result = self._get(
+                "/search/issues",
+                params={"q": f"repo:{owner}/{repo} {query}", "per_page": 1},
+            )
+            counts[key] = result.get("total_count", 0)
+        return counts
+
+    def get_tree(self, owner: str, repo: str, branch: str) -> dict:
+        """GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1 - full file tree."""
+        return self._get(
+            f"/repos/{owner}/{repo}/git/trees/{branch}", params={"recursive": "1"}
+        )
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_repo(owner: str, repo: str, token: str | None = None) -> dict:
@@ -74,5 +126,36 @@ def fetch_repo(owner: str, repo: str, token: str | None = None) -> dict:
     Cached per (owner, repo, token) for 5 minutes so re-running the app
     (e.g. from widget interactions) doesn't burn extra API calls.
     """
-    client = GitHubClient(token)
-    return client.get_repo(owner, repo)
+    return GitHubClient(token).get_repo(owner, repo)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_languages(owner: str, repo: str, token: str | None = None) -> dict:
+    """Cached fetch of the repo's language byte-count breakdown."""
+    return GitHubClient(token).get_languages(owner, repo)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_contributors(
+    owner: str, repo: str, token: str | None = None, limit: int = 10
+) -> list:
+    """Cached fetch of the repo's top contributors."""
+    return GitHubClient(token).get_contributors(owner, repo, limit)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_commit_activity(owner: str, repo: str, token: str | None = None) -> list:
+    """Cached fetch of weekly commit activity for the last year."""
+    return GitHubClient(token).get_commit_activity(owner, repo)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_issue_counts(owner: str, repo: str, token: str | None = None) -> dict:
+    """Cached fetch of open/closed issue and PR counts."""
+    return GitHubClient(token).get_issue_counts(owner, repo)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_tree(owner: str, repo: str, branch: str, token: str | None = None) -> dict:
+    """Cached fetch of the full repository file tree for a branch."""
+    return GitHubClient(token).get_tree(owner, repo, branch)
