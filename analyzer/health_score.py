@@ -25,13 +25,13 @@ def _score_maintenance(repo: dict, commit_activity: dict) -> tuple[int, str]:
     days_since_update = (datetime.now(timezone.utc) - updated_at).days
 
     if days_since_update <= 7:
-        score = 30
+        score = 25
     elif days_since_update <= 30:
-        score = 24
+        score = 20
     elif days_since_update <= 90:
-        score = 16
+        score = 13
     elif days_since_update <= 365:
-        score = 8
+        score = 7
     else:
         score = 0
 
@@ -39,7 +39,7 @@ def _score_maintenance(repo: dict, commit_activity: dict) -> tuple[int, str]:
     if trend == "decreasing":
         score = max(0, score - 5)
     elif trend == "increasing":
-        score = min(30, score + 5)
+        score = min(25, score + 5)
 
     explanation = f"Last updated {days_since_update} days ago"
     if trend not in (None, "unknown"):
@@ -50,7 +50,7 @@ def _score_maintenance(repo: dict, commit_activity: dict) -> tuple[int, str]:
 def _score_license(repo: dict) -> tuple[int, str]:
     license_info = repo.get("license")
     if license_info:
-        return 10, f"Licensed under {license_info['name']}"
+        return 5, f"Licensed under {license_info['name']}"
     return 0, "No license detected"
 
 
@@ -76,7 +76,7 @@ def _score_documentation(project_files: dict) -> tuple[int, str]:
 
 
 def _score_issue_health(issue_summary: dict) -> tuple[int, str]:
-    max_points = 20
+    max_points = 15
     rates = [
         r
         for r in (issue_summary.get("issue_close_rate"), issue_summary.get("pr_close_rate"))
@@ -104,6 +104,39 @@ def _score_contributor_diversity(contributors: list[dict]) -> tuple[int, str]:
     return 3, f"Highly concentrated - top contributor holds {top_share:.0%} of commits"
 
 
+def _score_testing(test_signals: dict, test_tooling: list[str]) -> tuple[int, str]:
+    """Test directory, test-file count, and known test tooling in dependency files."""
+    score = 0
+    notes = []
+
+    if test_signals.get("has_test_dir"):
+        score += 5
+        notes.append("test directory present")
+    else:
+        notes.append("no dedicated test directory")
+
+    count = test_signals.get("test_file_count", 0)
+    if count >= 20:
+        score += 7
+        notes.append(f"{count} test files (healthy coverage)")
+    elif count >= 5:
+        score += 5
+        notes.append(f"{count} test files")
+    elif count >= 1:
+        score += 3
+        notes.append(f"{count} test file(s)")
+    else:
+        notes.append("no test files detected")
+
+    if test_tooling:
+        score += 3
+        notes.append(f"test tooling detected: {', '.join(test_tooling)}")
+    else:
+        notes.append("no test tooling detected in dependency files")
+
+    return score, "; ".join(notes)
+
+
 def _score_popularity(repo: dict) -> tuple[int, str]:
     stars = repo.get("stargazers_count", 0)
     for threshold, points in [(10000, 15), (1000, 12), (100, 8), (10, 4), (0, 1)]:
@@ -118,6 +151,8 @@ def compute_health_score(
     contributors: list[dict],
     issue_summary: dict,
     project_files: dict,
+    test_signals: dict,
+    test_tooling: list[str],
 ) -> dict:
     """Combine repo signals into a single deterministic 0-100 health score.
 
@@ -128,18 +163,21 @@ def compute_health_score(
             ranked by contributions (most first).
         issue_summary: output of analyzer.activity.summarize_issues.
         project_files: output of analyzer.code_analysis.detect_project_files.
+        test_signals: output of analyzer.code_analysis.detect_test_signals.
+        test_tooling: output of analyzer.code_analysis.detect_test_tooling.
 
     Returns:
         dict with "score" (0-100), "grade" (A-F), and a "breakdown" list of
         per-category {"category", "score", "max", "explanation"} entries.
     """
     categories = [
-        ("Maintenance & recency", 30, _score_maintenance(repo, commit_activity)),
-        ("License", 10, _score_license(repo)),
-        ("Documentation & CI", 10, _score_documentation(project_files)),
-        ("Issue & PR responsiveness", 20, _score_issue_health(issue_summary)),
+        ("Maintenance & recency", 25, _score_maintenance(repo, commit_activity)),
+        ("Issue & PR responsiveness", 15, _score_issue_health(issue_summary)),
+        ("Testing", 15, _score_testing(test_signals, test_tooling)),
         ("Contributor diversity", 15, _score_contributor_diversity(contributors)),
         ("Popularity", 15, _score_popularity(repo)),
+        ("Documentation & CI", 10, _score_documentation(project_files)),
+        ("License", 5, _score_license(repo)),
     ]
 
     breakdown = [

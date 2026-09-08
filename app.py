@@ -8,12 +8,20 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from analyzer.activity import summarize_commit_activity, summarize_contributors, summarize_issues
-from analyzer.code_analysis import analyze_file_structure, detect_project_files, summarize_languages
+from analyzer.code_analysis import (
+    analyze_file_structure,
+    detect_project_files,
+    detect_test_signals,
+    detect_test_tooling,
+    find_dependency_files,
+    summarize_languages,
+)
 from analyzer.health_score import compute_health_score
 from github.client import (
     GitHubAPIError,
     fetch_commit_activity,
     fetch_contributors,
+    fetch_file_content,
     fetch_issue_counts,
     fetch_languages,
     fetch_repo,
@@ -217,14 +225,27 @@ def render_health_score(repo: dict, ref, token: str | None) -> None:
             commit_activity = summarize_commit_activity(fetch_commit_activity(ref.owner, ref.name, token))
             contributors = fetch_contributors(ref.owner, ref.name, token, limit=10)
             issue_summary = summarize_issues(fetch_issue_counts(ref.owner, ref.name, token))
-            project_files = detect_project_files(
-                fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
-            )
+            tree = fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
+            project_files = detect_project_files(tree)
+            test_signals = detect_test_signals(tree)
+            dependency_contents = {
+                path: fetch_file_content(ref.owner, ref.name, path, token)
+                for path in find_dependency_files(tree)
+            }
+            test_tooling = detect_test_tooling(dependency_contents)
     except GitHubAPIError as exc:
         st.error(str(exc))
         return
 
-    result = compute_health_score(repo, commit_activity, contributors, issue_summary, project_files)
+    result = compute_health_score(
+        repo,
+        commit_activity,
+        contributors,
+        issue_summary,
+        project_files,
+        test_signals,
+        test_tooling,
+    )
 
     status = st.success if result["score"] >= 80 else st.warning if result["score"] >= 60 else st.error
     status(f"Health score: {result['score']}/100 (grade {result['grade']})")

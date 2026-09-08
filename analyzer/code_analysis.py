@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from collections import Counter
 
 
@@ -59,6 +60,120 @@ def detect_project_files(tree: dict) -> dict:
         "has_contributing": any(p.rsplit("/", 1)[-1].startswith("contributing") for p in paths),
         "has_ci": any(p.startswith(".github/workflows/") for p in paths),
     }
+
+
+_TEST_FILE_PATTERNS = [
+    re.compile(r"(?:^|/)test_[^/]+\.py$", re.I),
+    re.compile(r"(?:^|/)[^/]+_test\.py$", re.I),
+    re.compile(r"(?:^|/)[^/]+\.test\.[jt]sx?$", re.I),
+    re.compile(r"(?:^|/)[^/]+\.spec\.[jt]sx?$", re.I),
+    re.compile(r"(?:^|/)[^/]+_spec\.rb$", re.I),
+    re.compile(r"(?:^|/)spec_[^/]+\.rb$", re.I),
+    re.compile(r"(?:^|/)[^/]+Test\.java$"),
+    re.compile(r"(?:^|/)[^/]+_test\.go$", re.I),
+    re.compile(r"(?:^|/)Test[^/]+\.php$"),
+    re.compile(r"(?:^|/)[^/]+Test\.php$"),
+]
+
+_TEST_DIR_NAMES = {"test", "tests", "__tests__", "spec", "specs"}
+
+
+def detect_test_signals(tree: dict) -> dict:
+    """Detect test-related signals from a repo tree.
+
+    Args:
+        tree: payload from GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1.
+
+    Returns:
+        dict with has_test_dir (bool) and test_file_count (int), the raw
+        material for the Testing health-score category.
+    """
+    entries = tree.get("tree", [])
+    files = [e["path"] for e in entries if e.get("type") == "blob"]
+    dirs = [e["path"] for e in entries if e.get("type") == "tree"]
+
+    test_file_count = sum(
+        1 for path in files if any(pattern.search(path) for pattern in _TEST_FILE_PATTERNS)
+    )
+    has_test_dir = any(
+        segment.lower() in _TEST_DIR_NAMES for path in dirs for segment in path.split("/")
+    )
+
+    return {"has_test_dir": has_test_dir, "test_file_count": test_file_count}
+
+
+_DEPENDENCY_FILENAMES = {
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements_dev.txt",
+    "pyproject.toml",
+    "pipfile",
+    "setup.py",
+    "package.json",
+    "gemfile",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "go.mod",
+    "composer.json",
+}
+
+_IGNORED_DIR_SEGMENTS = {"node_modules", "vendor", "dist", "build", ".venv", "venv"}
+
+
+def find_dependency_files(tree: dict, limit: int = 5) -> list[str]:
+    """Find likely dependency-manifest paths in a repo tree.
+
+    Skips vendored/build directories so a stray `package.json` under
+    `node_modules/` doesn't get picked over the project's own manifest.
+    Shallower matches are preferred.
+    """
+    matches = []
+    for e in tree.get("tree", []):
+        if e.get("type") != "blob":
+            continue
+        segments = e["path"].split("/")
+        if any(seg.lower() in _IGNORED_DIR_SEGMENTS for seg in segments[:-1]):
+            continue
+        if segments[-1].lower() in _DEPENDENCY_FILENAMES:
+            matches.append(e["path"])
+    matches.sort(key=lambda p: p.count("/"))
+    return matches[:limit]
+
+
+_TEST_TOOLING_KEYWORDS = {
+    "pytest": "pytest",
+    "unittest": "unittest",
+    "nose": "nose",
+    "tox": "tox",
+    "jest": "jest",
+    "mocha": "mocha",
+    "vitest": "vitest",
+    "junit": "junit",
+    "rspec": "rspec",
+    "phpunit": "phpunit",
+}
+
+
+def detect_test_tooling(dependency_contents: dict[str, str | None]) -> list[str]:
+    """Scan dependency-file contents for well-known test tooling names.
+
+    Args:
+        dependency_contents: {path: file text or None} for manifests found
+            by find_dependency_files.
+
+    Returns:
+        Sorted list of recognized tool names found (e.g. ["jest", "pytest"]).
+    """
+    found = set()
+    for content in dependency_contents.values():
+        if not content:
+            continue
+        lowered = content.lower()
+        for tool, keyword in _TEST_TOOLING_KEYWORDS.items():
+            if keyword in lowered:
+                found.add(tool)
+    return sorted(found)
 
 
 def summarize_languages(languages: dict, top_n: int = 6) -> list[dict]:

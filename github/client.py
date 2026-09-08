@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import time
 
 import requests
@@ -118,6 +119,36 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/git/trees/{branch}", params={"recursive": "1"}
         )
 
+    def get_file_content(self, owner: str, repo: str, path: str) -> str | None:
+        """GET /repos/{owner}/{repo}/contents/{path} - decoded text content.
+
+        Returns None if the file doesn't exist rather than raising, since
+        callers use this to opportunistically probe for optional manifests.
+        """
+        url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{path}"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=REQUEST_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise GitHubAPIError(f"Network error while contacting GitHub: {exc}") from exc
+
+        if response.status_code == 404:
+            return None
+        if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+            raise RateLimitError(
+                "GitHub API rate limit exceeded. Add a GitHub token in the "
+                "sidebar to raise the limit from 60 to 5,000 requests/hour."
+            )
+        if not response.ok:
+            raise GitHubAPIError(f"GitHub API error ({response.status_code}): {response.reason}")
+
+        data = response.json()
+        if data.get("encoding") != "base64" or "content" not in data:
+            return None
+        try:
+            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return None
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_repo(owner: str, repo: str, token: str | None = None) -> dict:
@@ -159,3 +190,11 @@ def fetch_issue_counts(owner: str, repo: str, token: str | None = None) -> dict:
 def fetch_tree(owner: str, repo: str, branch: str, token: str | None = None) -> dict:
     """Cached fetch of the full repository file tree for a branch."""
     return GitHubClient(token).get_tree(owner, repo, branch)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_file_content(
+    owner: str, repo: str, path: str, token: str | None = None
+) -> str | None:
+    """Cached fetch of a single file's decoded text content, or None if missing."""
+    return GitHubClient(token).get_file_content(owner, repo, path)
