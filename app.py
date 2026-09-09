@@ -17,6 +17,7 @@ from analyzer.code_analysis import (
     summarize_languages,
 )
 from analyzer.health_score import compute_health_score
+from ai.insights import InsightsError, generate_insights, get_api_key
 from github.client import (
     GitHubAPIError,
     fetch_commit_activity,
@@ -61,7 +62,7 @@ with st.sidebar:
         else "No token — limited to 60 requests/hour."
     )
     ai_key = st.text_input(
-        "AI API key (optional)", type="password", value=os.getenv("ANTHROPIC_API_KEY", "")
+        "AI API key (optional)", type="password", value=os.getenv("GEMINI_API_KEY", "")
     )
     st.caption("AI key detected — AI features enabled." if ai_key else "No AI key — AI features disabled.")
     analyze_clicked = st.button("Analyze", type="primary")
@@ -290,19 +291,120 @@ def render_health_score(repo: dict, ref, token: str | None) -> None:
             st.caption(item["explanation"])
 
 
-def render_strengths_weaknesses() -> None:
-    """Render the Strengths & Weaknesses tab: placeholder until Phase 6 wires up AI."""
-    st.info(
-        "AI-generated strengths and weaknesses will appear here once an AI API key "
-        "is configured (Phase 6)."
+def build_analysis(repo: dict, ref, token: str | None) -> dict:
+    """Gather structured, non-source-code data to send to the AI for insights.
+
+    Reuses the same cached fetches the other tabs use, so this costs no
+    extra GitHub API calls within the cache TTL.
+    """
+    commit_activity = summarize_commit_activity(fetch_commit_activity(ref.owner, ref.name, token))
+    contributors = fetch_contributors(ref.owner, ref.name, token, limit=10)
+    issue_summary = summarize_issues(fetch_issue_counts(ref.owner, ref.name, token))
+    tree = fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
+    project_files = detect_project_files(tree)
+    test_signals = detect_test_signals(tree)
+    dependency_contents = {
+        path: fetch_file_content(ref.owner, ref.name, path, token)
+        for path in find_dependency_files(tree)
+    }
+    test_tooling = detect_test_tooling(dependency_contents)
+    structure = analyze_file_structure(tree)
+    languages = summarize_languages(fetch_languages(ref.owner, ref.name, token))
+
+    health = compute_health_score(
+        repo, commit_activity, contributors, issue_summary, project_files, test_signals, test_tooling
     )
+
+    return {
+        "repo_overview": {
+            "full_name": repo["full_name"],
+            "description": repo.get("description"),
+            "stars": repo["stargazers_count"],
+            "forks": repo["forks_count"],
+            "watchers": repo["watchers_count"],
+            "open_issues": repo["open_issues_count"],
+            "license": (repo.get("license") or {}).get("name"),
+            "created_at": repo["created_at"][:10],
+            "updated_at": repo["updated_at"][:10],
+        },
+        "health_score": {
+            "score": health["score"],
+            "grade": health["grade"],
+            "breakdown": health["breakdown"],
+        },
+        "languages": languages,
+        "activity": {
+            "commits_last_year": commit_activity["total_last_year"],
+            "commits_last_4_weeks": commit_activity["total_last_4_weeks"],
+            "trend": commit_activity["trend"],
+            "known_contributor_count": len(contributors),
+            "open_issues": issue_summary["open_issues"],
+            "closed_issues": issue_summary["closed_issues"],
+            "open_prs": issue_summary["open_prs"],
+            "closed_prs": issue_summary["closed_prs"],
+            "issue_close_rate": issue_summary["issue_close_rate"],
+            "pr_close_rate": issue_summary["pr_close_rate"],
+        },
+        "structure": {
+            "file_count": structure["file_count"],
+            "dir_count": structure["dir_count"],
+            "max_depth": structure["max_depth"],
+            "top_extensions": structure["extensions"],
+        },
+        "project_files": project_files,
+        "test_signals": {**test_signals, "test_tooling": test_tooling},
+    }
+
+
+def render_strengths_weaknesses(repo: dict, ref, token: str | None, ai_key: str) -> None:
+    """Render the Strengths & Weaknesses tab using AI insights (Phase 6)."""
+    api_key = get_api_key(ai_key)
+    if not api_key:
+        st.info("AI insights unavailable. Add an API key to enable this feature.")
+        return
+
+    cache_key = f"ai_insights::{repo['full_name']}"
+    if cache_key not in st.session_state:
+        try:
+            with st.spinner("Generating AI insights..."):
+                analysis = build_analysis(repo, ref, token)
+                result = generate_insights(analysis, api_key)
+        except InsightsError as exc:
+            st.session_state[cache_key] = {"error": str(exc)}
+        except GitHubAPIError as exc:
+            st.session_state[cache_key] = {"error": str(exc)}
+        else:
+            st.session_state[cache_key] = {"result": result}
+
+    cached = st.session_state[cache_key]
+    if "error" in cached:
+        st.error(f"Couldn't generate AI insights: {cached['error']}")
+        return
+
+    result = cached["result"]
+    if not result["ok"]:
+        st.warning("The AI response wasn't valid JSON, so here's the raw output instead:")
+        st.text(result["raw_text"])
+        return
+
+    st.write("**Overall assessment**")
+    st.write(result["overall_assessment"])
+
+    st.divider()
     col1, col2 = st.columns(2)
     with col1:
         st.write("**Strengths**")
-        st.caption("Not yet available.")
+        for item in result["strengths"]:
+            st.markdown(f"- {item}")
     with col2:
         st.write("**Weaknesses**")
-        st.caption("Not yet available.")
+        for item in result["weaknesses"]:
+            st.markdown(f"- {item}")
+
+    st.divider()
+    st.write("**Recommendations**")
+    for item in result["recommendations"]:
+        st.markdown(f"- {item}")
 
 
 if analyze_clicked:
@@ -342,4 +444,4 @@ if "repo_data" in st.session_state:
     with structure_tab:
         render_repo_structure(repo_data, ref, token)
     with strengths_tab:
-        render_strengths_weaknesses()
+        render_strengths_weaknesses(repo_data, ref, token, ai_key)

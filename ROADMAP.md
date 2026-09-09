@@ -90,11 +90,15 @@ github-analyzer/
   readable in light and dark
 - No new features beyond the plan
 
-### Phase 6 — Optional AI insights ⏳ Planned
-- Send **structured analysis only** (never source code) to an LLM
+### Phase 6 — Optional AI insights ✅ Done
+- Send **structured analysis only** (never source code) to Google Gemini
+  (`gemini-flash-latest`, via `google-generativeai`)
 - Generate: 3 strengths, 3 weaknesses, 3 recommendations, short overall assessment
+- Strict JSON response schema, parsed with a plain-text fallback if parsing fails
 - App works without an API key; shows: "AI insights unavailable. Add an API key
   to enable this feature."
+- Key read from the sidebar field or `GEMINI_API_KEY` env var (sidebar wins)
+- AI result cached per repo in session state so it doesn't re-call on every re-run
 
 ### Phase 7 — Ask about this repository ⏳ Planned
 - Optional Q&A using the collected analysis as context
