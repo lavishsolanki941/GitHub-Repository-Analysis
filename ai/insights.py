@@ -36,6 +36,20 @@ Requirements:
 """
 
 
+_QA_PROMPT_TEMPLATE = """You are answering a question about a GitHub repository using only the \
+structured metrics below (no source code is provided or available). Answer solely from this data - \
+if the data doesn't cover something, say so instead of guessing.
+
+DATA:
+{analysis_json}
+
+QUESTION:
+{question}
+
+Answer in plain text (no markdown code fences), in 2-5 concise sentences grounded in the data above.
+"""
+
+
 class InsightsError(Exception):
     """AI insights could not be generated. Message is safe to show to users."""
 
@@ -48,6 +62,24 @@ def get_api_key(sidebar_value: str | None) -> str | None:
 def build_prompt(analysis: dict) -> str:
     """Build the insights prompt from a structured analysis dict (JSON, no source code)."""
     return _PROMPT_TEMPLATE.format(analysis_json=json.dumps(analysis, indent=2, default=str))
+
+
+def build_qa_prompt(analysis: dict, question: str) -> str:
+    """Build the Q&A prompt from a structured analysis dict and a user question."""
+    return _QA_PROMPT_TEMPLATE.format(
+        analysis_json=json.dumps(analysis, indent=2, default=str), question=question.strip()
+    )
+
+
+def _get_model(api_key: str):
+    """Configure the Gemini SDK and return a model instance, or raise InsightsError."""
+    try:
+        import google.generativeai as genai
+    except ImportError as exc:
+        raise InsightsError("The google-generativeai package is not installed.") from exc
+
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(GEMINI_MODEL)
 
 
 def _extract_json(text: str) -> dict:
@@ -97,14 +129,8 @@ def generate_insights(analysis: dict, api_key: str) -> dict:
             (missing dependency, bad key, network error, quota). The message
             is safe to show directly to the user.
     """
+    model = _get_model(api_key)
     try:
-        import google.generativeai as genai
-    except ImportError as exc:
-        raise InsightsError("The google-generativeai package is not installed.") from exc
-
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(build_prompt(analysis))
         text = response.text
     except Exception as exc:  # Gemini SDK raises its own exception hierarchy for auth/quota/network
@@ -116,3 +142,28 @@ def generate_insights(analysis: dict, api_key: str) -> dict:
         return {"ok": False, "raw_text": text}
 
     return {"ok": True, **parsed}
+
+
+def answer_question(analysis: dict, question: str, api_key: str) -> str:
+    """Answer a free-form question about the repo using the already-computed analysis.
+
+    Args:
+        analysis: plain JSON-serializable dict of already-computed analysis
+            (same shape as passed to generate_insights). Never pass source code here.
+        question: the user's free-form question.
+        api_key: Gemini API key.
+
+    Returns:
+        The model's plain-text answer.
+
+    Raises:
+        InsightsError: for failures that mean no response was obtained at all
+            (missing dependency, bad key, network error, quota). The message
+            is safe to show directly to the user.
+    """
+    model = _get_model(api_key)
+    try:
+        response = model.generate_content(build_qa_prompt(analysis, question))
+        return response.text.strip()
+    except Exception as exc:  # Gemini SDK raises its own exception hierarchy for auth/quota/network
+        raise InsightsError(f"AI request failed: {exc}") from exc

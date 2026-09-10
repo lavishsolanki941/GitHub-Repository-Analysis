@@ -17,7 +17,7 @@ from analyzer.code_analysis import (
     summarize_languages,
 )
 from analyzer.health_score import compute_health_score
-from ai.insights import InsightsError, generate_insights, get_api_key
+from ai.insights import InsightsError, answer_question, generate_insights, get_api_key
 from github.client import (
     GitHubAPIError,
     fetch_commit_activity,
@@ -407,6 +407,44 @@ def render_strengths_weaknesses(repo: dict, ref, token: str | None, ai_key: str)
         st.markdown(f"- {item}")
 
 
+def render_ask_section(repo: dict, ref, token: str | None, ai_key: str) -> None:
+    """Render the 'Ask about this repository' Q&A section (Phase 7)."""
+    api_key = get_api_key(ai_key)
+    if not api_key:
+        st.info("Ask feature unavailable. Add an API key to enable this.")
+        return
+
+    st.write(
+        "Ask a question about this repository. Example: "
+        "*\"Why is the health score low?\"*, *\"Is this repo actively maintained?\"*, "
+        "*\"What should I improve first?\"*"
+    )
+
+    answer_key = f"qa_answer::{repo['full_name']}"
+    question = st.text_input("Your question", key=f"qa_question::{repo['full_name']}")
+    if st.button("Ask", key=f"qa_submit::{repo['full_name']}"):
+        if not question.strip():
+            st.warning("Enter a question first.")
+        else:
+            try:
+                with st.spinner("Thinking..."):
+                    analysis = build_analysis(repo, ref, token)
+                    answer = answer_question(analysis, question, api_key)
+            except (InsightsError, GitHubAPIError) as exc:
+                st.session_state[answer_key] = {"question": question, "error": str(exc)}
+            else:
+                st.session_state[answer_key] = {"question": question, "answer": answer}
+
+    if answer_key in st.session_state:
+        cached = st.session_state[answer_key]
+        st.divider()
+        st.write(f"**Q: {cached['question']}**")
+        if "error" in cached:
+            st.error(f"Couldn't get an answer: {cached['error']}")
+        else:
+            st.write(cached["answer"])
+
+
 if analyze_clicked:
     if not repo_url:
         st.warning("Enter a repository URL first.")
@@ -430,8 +468,24 @@ if "repo_data" in st.session_state:
     ref = st.session_state["repo_ref"]
     token = github_token or None
 
-    overview_tab, health_tab, languages_tab, activity_tab, structure_tab, strengths_tab = st.tabs(
-        ["Overview", "Health Score", "Languages", "Activity", "Repository Structure", "Strengths & Weaknesses"]
+    (
+        overview_tab,
+        health_tab,
+        languages_tab,
+        activity_tab,
+        structure_tab,
+        strengths_tab,
+        ask_tab,
+    ) = st.tabs(
+        [
+            "Overview",
+            "Health Score",
+            "Languages",
+            "Activity",
+            "Repository Structure",
+            "Strengths & Weaknesses",
+            "Ask about this repository",
+        ]
     )
     with overview_tab:
         render_overview(repo_data)
@@ -445,3 +499,5 @@ if "repo_data" in st.session_state:
         render_repo_structure(repo_data, ref, token)
     with strengths_tab:
         render_strengths_weaknesses(repo_data, ref, token, ai_key)
+    with ask_tab:
+        render_ask_section(repo_data, ref, token, ai_key)
