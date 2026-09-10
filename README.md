@@ -7,6 +7,6 @@ Work in progress
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # optional: add GITHUB_TOKEN / GEMINI_API_KEY
+cp .env.example .env   
 streamlit run app.py
 ```
