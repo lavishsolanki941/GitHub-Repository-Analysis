@@ -142,6 +142,11 @@ python -m venv .venv
 # source .venv/bin/activate     # macOS/Linux
 
 pip install -r requirements.txt
+<<<<<<< HEAD
+=======
+cp .env.example .env   
+streamlit run app.py
+>>>>>>> bcf44c7fc5011c7c4adaa30a407666313f916f93
 ```
 
 ## Environment variables
