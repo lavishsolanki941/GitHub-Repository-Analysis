@@ -19,6 +19,7 @@ from analyzer.code_analysis import (
 from analyzer.health_score import compute_health_score
 from ai.insights import InsightsError, answer_question, generate_insights, get_api_key
 from github.client import (
+    EmptyRepositoryError,
     GitHubAPIError,
     fetch_commit_activity,
     fetch_contributors,
@@ -206,6 +207,9 @@ def render_repo_structure(repo: dict, ref, token: str | None) -> None:
     try:
         with st.spinner("Fetching file tree..."):
             tree = fetch_tree(ref.owner, ref.name, repo["default_branch"], token)
+    except EmptyRepositoryError as exc:
+        st.info(str(exc))
+        return
     except GitHubAPIError as exc:
         st.error(str(exc))
         tree = {}
@@ -249,6 +253,9 @@ def render_health_score(repo: dict, ref, token: str | None) -> None:
                 for path in find_dependency_files(tree)
             }
             test_tooling = detect_test_tooling(dependency_contents)
+    except EmptyRepositoryError as exc:
+        st.info(f"{exc} A health score can't be computed until it has some content.")
+        return
     except GitHubAPIError as exc:
         st.error(str(exc))
         return

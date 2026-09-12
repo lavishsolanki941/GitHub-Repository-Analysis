@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from datetime import datetime, timezone
 
 import requests
 import streamlit as st
@@ -22,6 +23,31 @@ class RepoNotFoundError(GitHubAPIError):
 
 class RateLimitError(GitHubAPIError):
     """GitHub's rate limit was hit for this token/IP."""
+
+
+class EmptyRepositoryError(GitHubAPIError):
+    """Repo exists but has no commits yet, so it has no file tree to inspect."""
+
+
+def _rate_limit_message(response: requests.Response) -> str:
+    """Build a friendly rate-limit message including remaining count and reset time."""
+    remaining = response.headers.get("X-RateLimit-Remaining", "0")
+    limit = response.headers.get("X-RateLimit-Limit")
+    reset_header = response.headers.get("X-RateLimit-Reset")
+
+    quota = f"{remaining}/{limit}" if limit else remaining
+    message = f"GitHub API rate limit exceeded ({quota} requests remaining)."
+
+    if reset_header:
+        try:
+            reset_time = datetime.fromtimestamp(int(reset_header), tz=timezone.utc)
+            wait_minutes = max(0, int((reset_time - datetime.now(timezone.utc)).total_seconds() // 60))
+            message += f" Resets at {reset_time.strftime('%H:%M UTC')} (in about {wait_minutes} min)."
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    message += " Add a GitHub token in the sidebar to raise the limit from 60 to 5,000 requests/hour."
+    return message
 
 
 class GitHubClient:
@@ -46,6 +72,14 @@ class GitHubClient:
             response = requests.get(
                 url, headers=self._headers(), params=params, timeout=REQUEST_TIMEOUT
             )
+        except requests.exceptions.Timeout as exc:
+            raise GitHubAPIError(
+                "The request to GitHub timed out. Check your connection and try again."
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise GitHubAPIError(
+                "Couldn't connect to GitHub. Check your internet connection and try again."
+            ) from exc
         except requests.exceptions.RequestException as exc:
             raise GitHubAPIError(f"Network error while contacting GitHub: {exc}") from exc
 
@@ -53,17 +87,31 @@ class GitHubClient:
             raise RepoNotFoundError(
                 "Repository not found. It may be private, misspelled, or deleted."
             )
+        if response.status_code == 409:
+            raise EmptyRepositoryError("This repository is empty - it has no commits yet.")
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+            raise RateLimitError(_rate_limit_message(response))
+        if response.status_code == 403 and response.headers.get("Retry-After"):
+            retry_after = response.headers["Retry-After"]
             raise RateLimitError(
-                "GitHub API rate limit exceeded. Add a GitHub token in the "
-                "sidebar to raise the limit from 60 to 5,000 requests/hour."
+                f"GitHub is temporarily throttling requests (secondary rate limit). "
+                f"Try again in about {retry_after} seconds."
             )
         if response.status_code == 401:
             raise GitHubAPIError("GitHub token was rejected. Check that it's valid.")
         if not response.ok:
             raise GitHubAPIError(f"GitHub API error ({response.status_code}): {response.reason}")
 
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            if response.status_code == 202:
+                # Some stats endpoints return a 202 with an empty body while
+                # GitHub computes them asynchronously - treat as "no data yet".
+                return []
+            raise GitHubAPIError(
+                "Received an unexpected response from GitHub. Please try again."
+            ) from exc
 
     def get_repo(self, owner: str, repo: str) -> dict:
         """GET /repos/{owner}/{repo} - core repository metadata."""
@@ -128,20 +176,37 @@ class GitHubClient:
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{path}"
         try:
             response = requests.get(url, headers=self._headers(), timeout=REQUEST_TIMEOUT)
+        except requests.exceptions.Timeout as exc:
+            raise GitHubAPIError(
+                "The request to GitHub timed out. Check your connection and try again."
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise GitHubAPIError(
+                "Couldn't connect to GitHub. Check your internet connection and try again."
+            ) from exc
         except requests.exceptions.RequestException as exc:
             raise GitHubAPIError(f"Network error while contacting GitHub: {exc}") from exc
 
-        if response.status_code == 404:
+        if response.status_code in (404, 409):
+            # 404: file doesn't exist. 409: repository is empty. Either way,
+            # callers only use this to opportunistically probe for optional
+            # manifests, so treat both as "no content" rather than raising.
             return None
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+            raise RateLimitError(_rate_limit_message(response))
+        if response.status_code == 403 and response.headers.get("Retry-After"):
+            retry_after = response.headers["Retry-After"]
             raise RateLimitError(
-                "GitHub API rate limit exceeded. Add a GitHub token in the "
-                "sidebar to raise the limit from 60 to 5,000 requests/hour."
+                f"GitHub is temporarily throttling requests (secondary rate limit). "
+                f"Try again in about {retry_after} seconds."
             )
         if not response.ok:
             raise GitHubAPIError(f"GitHub API error ({response.status_code}): {response.reason}")
 
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            return None
         if data.get("encoding") != "base64" or "content" not in data:
             return None
         try:

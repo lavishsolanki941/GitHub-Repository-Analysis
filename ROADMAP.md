@@ -104,12 +104,20 @@ github-analyzer/
 - Optional Q&A using the collected analysis as context
 - Handles missing API key gracefully
 
-### Phase 8 — Error handling, testing, README ⏳ Planned
-- Handle: invalid URLs, repo not found, private repos, rate limits, missing keys,
-  network errors, empty repos, low-activity repos, pagination
-- Friendly Streamlit error messages (no raw stack traces)
-- Test against multiple public repos
-- Finalize a professional README
+### Phase 8 — Error handling, testing, README ✅ Done
+- Handle: invalid URLs, repo not found, private repos, rate limits (primary +
+  secondary/abuse), missing keys, network errors (timeout vs. connection
+  failure), empty repos, low-activity repos, pagination
+- Fixed a real crash: `stats/commit_activity`'s async 202-with-empty-body
+  response was calling `.json()` unguarded, raising an uncaught
+  `JSONDecodeError` instead of a friendly message
+- Added `EmptyRepositoryError` for the 409 GitHub returns on `git/trees` for
+  a repo with no commits, shown as `st.info` rather than `st.error`
+- Rate limit messages now show remaining/limit and a reset time
+- Friendly Streamlit error messages throughout (no raw stack traces)
+- Tested against pallets/flask (large/active), sindresorhus/awesome
+  (docs-only), octocat/Spoon-Knife (small/inactive), and an invalid URL
+- Finalized a professional README
 
 ## Design Rules
 - GitHub API logic, analysis logic, and AI logic stay in separate modules
