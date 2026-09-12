@@ -52,21 +52,14 @@ CATEGORICAL_COLORS = [
     "#898781",  # muted gray, reserved for "Other"
 ]
 
+github_token = os.getenv("GITHUB_TOKEN") or None
+ai_key = os.getenv("GEMINI_API_KEY") or None
+
 with st.sidebar:
     st.header("GitHub Repository Analyzer")
     repo_url = st.text_input("Repository URL", placeholder="https://github.com/owner/repo")
-    github_token = st.text_input(
-        "GitHub token (optional)", type="password", value=os.getenv("GITHUB_TOKEN", "")
-    )
-    st.caption(
-        "Token detected — 5,000 requests/hour." if github_token
-        else "No token — limited to 60 requests/hour."
-    )
-    ai_key = st.text_input(
-        "AI API key (optional)", type="password", value=os.getenv("GEMINI_API_KEY", "")
-    )
-    st.caption("AI key detected — AI features enabled." if ai_key else "No AI key — AI features disabled.")
     analyze_clicked = st.button("Analyze", type="primary")
+    st.caption("AI insights enabled" if ai_key else "AI insights off")
 
 st.title("GitHub Repository Analyzer")
 st.write(
